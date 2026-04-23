@@ -625,8 +625,14 @@ def _write_sources_sheet(wb: Workbook, data: dict) -> None:
         "The 'Overview' tab shows the scrape status for the current run; historical embedded data is "
         "used as the baseline in all cases.",
 
-        "• DATA CURRENCY: The embedded baseline covers 2019 – 2024 (full year where published). "
-        "2024 figures for engine OEMs are preliminary / estimated pending full-year publications.",
+        "• DATA CURRENCY: The embedded baseline covers 2005 – 2025 (20+ years). "
+        "2025 rows are full-year estimates pending official January 2026 delivery announcements. "
+        "Pre-2015 per-model breakdowns are estimated from programme rate disclosures.",
+
+        "• MONTHLY DATA: The 'Monthly Tracker' sheet shows month-by-month Airbus and Boeing "
+        "deliveries scraped from official monthly press releases when Playwright is installed. "
+        "If live scraping fails, the sheet falls back to quarterly estimates derived from "
+        "H1/H2 disclosures and historical delivery-cadence patterns.",
     ]
     for note_line in methodology:
         cell = ws.cell(row=row, column=1, value=note_line)
@@ -658,6 +664,167 @@ def _write_sources_sheet(wb: Workbook, data: dict) -> None:
     _set_col_widths(ws, [28, 28, 58, 52])
 
 
+# ── Monthly Tracker sheet ────────────────────────────────────────────────────
+
+_MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _write_monthly_sheet(wb: Workbook, data: dict) -> None:
+    """
+    Write the Monthly Tracker sheet.
+
+    Priority (per manufacturer):
+      1. Scraped monthly dict {"YYYY-MM": count}  →  one column per month
+      2. Quarterly embedded data                  →  Q1-Q4 columns with note
+    """
+    ws = wb.create_sheet("Monthly Tracker")
+    ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "2E4057"
+
+    # Banner
+    ws.merge_cells("A1:N1")
+    c = ws["A1"]
+    c.value = "MONTHLY DELIVERY TRACKER — Airbus & Boeing"
+    c.fill = _fill("2E4057")
+    c.font = Font(bold=True, size=14, color="FFFFFF", name="Calibri")
+    c.alignment = _align("center")
+    ws.row_dimensions[1].height = 28
+
+    ws.merge_cells("A2:N2")
+    c = ws["A2"]
+    c.value = (
+        "Monthly figures from live scrape of official press releases.  "
+        "Where monthly data is unavailable, quarterly estimates (Q1–Q4) are shown."
+    )
+    c.fill = _fill("3D5A80")
+    c.font = Font(size=9, color="FFFFFF", italic=True, name="Calibri")
+    c.alignment = _align("center")
+    ws.row_dimensions[2].height = 16
+
+    row = 4
+
+    for mfr_key, mfr_label, header_bg in [
+        ("airbus", "AIRBUS — Monthly Deliveries (All Families Combined)", C["airbus_dark"]),
+        ("boeing", "BOEING — Monthly Deliveries (All Families Combined)", C["boeing_dark"]),
+    ]:
+        monthly_scraped: dict[str, int] = data.get(f"{mfr_key}_monthly", {})
+        quarterly_data  = data[mfr_key]["quarterly"]
+
+        _section_title(ws, row, mfr_label, 14, header_bg)
+        row += 1
+
+        if monthly_scraped:
+            # ── Scraped monthly view ──────────────────────────────────────────
+            # Pivot: rows = years, cols = months Jan-Dec
+            year_month: dict[int, dict[int, int]] = {}
+            for ym_key, cnt in monthly_scraped.items():
+                try:
+                    yr, mo = int(ym_key[:4]), int(ym_key[5:7])
+                    year_month.setdefault(yr, {})[mo] = cnt
+                except ValueError:
+                    continue
+
+            monthly_headers = ["Year"] + _MONTH_ABBR + ["Total"]
+            for c_i, h in enumerate(monthly_headers, start=1):
+                _header_style(ws, row, c_i, h, header_bg)
+            row += 1
+
+            for yr in sorted(year_month.keys(), reverse=True):
+                mo_data = year_month[yr]
+                total   = sum(mo_data.values())
+                bg = C["row_alt"] if row % 2 == 0 else C["white"]
+                ws.cell(row=row, column=1, value=yr).fill    = _fill(bg)
+                ws.cell(row=row, column=1).border            = _border()
+                ws.cell(row=row, column=1).alignment         = _align("center")
+                ws.cell(row=row, column=1).font              = _font()
+                for mo in range(1, 13):
+                    val = mo_data.get(mo, None)
+                    cell = ws.cell(row=row, column=mo + 1, value=val)
+                    cell.fill      = _fill(bg)
+                    cell.border    = _border()
+                    cell.alignment = _align("center")
+                    cell.font      = _font()
+                    if val is not None:
+                        cell.number_format = "#,##0"
+                # Total column
+                tot_cell = ws.cell(row=row, column=14, value=total)
+                tot_cell.fill      = _fill(C["total_bg"])
+                tot_cell.border    = _border()
+                tot_cell.alignment = _align("center")
+                tot_cell.font      = _font(bold=True)
+                tot_cell.number_format = "#,##0"
+                row += 1
+
+        else:
+            # ── Quarterly fallback ────────────────────────────────────────────
+            q_note = ws.cell(
+                row=row, column=1,
+                value="  Live monthly data unavailable — showing quarterly estimates",
+            )
+            q_note.font      = _font(size=9, italic=True, color="888888")
+            q_note.alignment = _align("left")
+            ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
+            row += 1
+
+            q_ann = quarterly_data
+            nxt = _write_table(ws, row, q_ann["headers"], q_ann["rows"],
+                               header_bg=header_bg, total_col_idx=len(q_ann["headers"]))
+            row = nxt
+
+        row += 2
+
+    # ── Combined monthly view (if both scraped) ───────────────────────────────
+    ab_monthly = data.get("airbus_monthly", {})
+    bo_monthly = data.get("boeing_monthly", {})
+    if ab_monthly and bo_monthly:
+        all_keys = sorted(set(ab_monthly) | set(bo_monthly), reverse=True)
+        _section_title(ws, row, "COMBINED MONTHLY — AIRBUS + BOEING", 14, "2C3E50")
+        row += 1
+        combo_hdrs = ["Year-Month", "Airbus", "Boeing", "Total Industry"]
+        for c_i, h in enumerate(combo_hdrs, start=1):
+            _header_style(ws, row, c_i, h, "2C3E50")
+        row += 1
+        for ym_key in all_keys[:36]:  # up to 3 years
+            ab_cnt = ab_monthly.get(ym_key, 0) or 0
+            bo_cnt = bo_monthly.get(ym_key, 0) or 0
+            bg = C["row_alt"] if row % 2 == 0 else C["white"]
+            for c_i, val in enumerate([ym_key, ab_cnt or "—", bo_cnt or "—",
+                                        (ab_cnt + bo_cnt) if (ab_cnt or bo_cnt) else "—"],
+                                       start=1):
+                cell = ws.cell(row=row, column=c_i, value=val)
+                cell.fill      = _fill(bg)
+                cell.border    = _border()
+                cell.alignment = _align("center")
+                cell.font      = _font()
+                if isinstance(val, int) and c_i > 1:
+                    cell.number_format = "#,##0"
+            row += 1
+        row += 1
+
+    # ── Scrape status note ────────────────────────────────────────────────────
+    _section_title(ws, row, "MONTHLY SCRAPE STATUS", 14, "555555")
+    row += 1
+    for mfr_key, mfr_label in [("airbus_monthly", "Airbus"), ("boeing_monthly", "Boeing")]:
+        res = data.get("scrape_results", {}).get(mfr_key, {})
+        status  = res.get("status", "not run").upper()
+        message = res.get("message", "")
+        count   = len(res.get("data", {})) if isinstance(res.get("data"), dict) else 0
+        bg = "E8F8E8" if status == "OK" else "FFF3CD" if status == "PARTIAL" else "FDECEA"
+        for c_i, val in enumerate(
+            [mfr_label, status, f"{count} months parsed", message[:120]], start=1
+        ):
+            cell = ws.cell(row=row, column=c_i, value=val)
+            cell.fill      = _fill(bg)
+            cell.border    = _border()
+            cell.font      = _font(size=9)
+            cell.alignment = _align("left")
+        row += 1
+
+    _set_col_widths(ws, [10, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 10, 22, 22])
+    _freeze(ws, "B4")
+
+
 # ── Main entry point ─────────────────────────────────────────────────────────
 
 def build_workbook(merged_data: dict, output_path: str) -> str:
@@ -670,6 +837,7 @@ def build_workbook(merged_data: dict, output_path: str) -> str:
     wb.remove(wb.active)
 
     _write_overview(wb, merged_data)
+    _write_monthly_sheet(wb, merged_data)
     _write_airbus_sheet(wb, merged_data)
     _write_boeing_sheet(wb, merged_data)
 

@@ -145,10 +145,62 @@ def _assemble_data(scrape_results: dict) -> dict:
         rr  = rr_yr_map.get(yr, 0) or 0
         overview_eng_rows.append([yr, ge, pw, rr, ge + pw + rr])
 
+    # ── Monthly scraped data ──────────────────────────────────────────────────
+    ab_monthly = scrape_results.get("airbus_monthly", {}).get("data") or {}
+    bo_monthly = scrape_results.get("boeing_monthly", {}).get("data") or {}
+
+    # ── Update quarterly fallback from annual scrape totals ───────────────────
+    ab_quarterly_rows = deepcopy(HD.AIRBUS_QUARTERLY["rows"])
+    bo_quarterly_rows = deepcopy(HD.BOEING_QUARTERLY["rows"])
+
+    # If we have monthly data, we can build a more accurate quarterly summary
+    def _monthly_to_quarterly(monthly: dict[str, int]) -> dict[int, dict[int, int]]:
+        """Convert {"YYYY-MM": N} → {year: {1: Q1, 2: Q2, 3: Q3, 4: Q4}}."""
+        result: dict[int, dict[int, int]] = {}
+        for ym_key, cnt in monthly.items():
+            try:
+                yr, mo = int(ym_key[:4]), int(ym_key[5:7])
+            except ValueError:
+                continue
+            q = (mo - 1) // 3 + 1
+            result.setdefault(yr, {})
+            result[yr][q] = result[yr].get(q, 0) + cnt
+        return result
+
+    if ab_monthly:
+        ab_q = _monthly_to_quarterly(ab_monthly)
+        existing_years = {r[0] for r in ab_quarterly_rows}
+        for yr, quarters in sorted(ab_q.items()):
+            total = sum(quarters.values())
+            row_vals = [yr, quarters.get(1, 0), quarters.get(2, 0),
+                        quarters.get(3, 0), quarters.get(4, 0), total]
+            if yr in existing_years:
+                ab_quarterly_rows = [row_vals if r[0] == yr else r
+                                     for r in ab_quarterly_rows]
+            else:
+                ab_quarterly_rows.append(row_vals)
+
+    if bo_monthly:
+        bo_q = _monthly_to_quarterly(bo_monthly)
+        existing_years = {r[0] for r in bo_quarterly_rows}
+        for yr, quarters in sorted(bo_q.items()):
+            total = sum(quarters.values())
+            row_vals = [yr, quarters.get(1, 0), quarters.get(2, 0),
+                        quarters.get(3, 0), quarters.get(4, 0), total]
+            if yr in existing_years:
+                bo_quarterly_rows = [row_vals if r[0] == yr else r
+                                     for r in bo_quarterly_rows]
+            else:
+                bo_quarterly_rows.append(row_vals)
+
     # ── Package it all up ─────────────────────────────────────────────────────
     return {
         "as_of": datetime.now().strftime("%B %Y"),
         "scrape_results": scrape_results,
+
+        # Pass monthly scraped dicts through to Excel writer
+        "airbus_monthly": ab_monthly,
+        "boeing_monthly": bo_monthly,
 
         "overview": {
             "airframer_totals": {
@@ -169,6 +221,11 @@ def _assemble_data(scrape_results: dict) -> dict:
             },
             "production_rates": HD.AIRBUS_RATES,
             "backlog": HD.AIRBUS_BACKLOG,
+            "quarterly": {
+                "headers": HD.AIRBUS_QUARTERLY["headers"],
+                "rows": ab_quarterly_rows,
+                "notes": HD.AIRBUS_QUARTERLY["notes"],
+            },
         },
 
         "boeing": {
@@ -179,6 +236,11 @@ def _assemble_data(scrape_results: dict) -> dict:
             },
             "production_rates": HD.BOEING_RATES,
             "backlog": HD.BOEING_BACKLOG,
+            "quarterly": {
+                "headers": HD.BOEING_QUARTERLY["headers"],
+                "rows": bo_quarterly_rows,
+                "notes": HD.BOEING_QUARTERLY["notes"],
+            },
         },
 
         "ge_aerospace": {
